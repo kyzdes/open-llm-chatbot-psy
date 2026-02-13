@@ -9,7 +9,7 @@ from bot.utils.constants import RATE_LIMIT_BURST, RATE_LIMIT_RATE
 _BUCKET_EVICTION_AGE = 3600  # 1 hour
 _LIGHTWEIGHT_COMMANDS = frozenset({
     "/mood", "/diary", "/start", "/help", "/cancel", "/skip",
-    "/reset", "/techniques", "/role",
+    "/reset", "/techniques",
 })
 
 

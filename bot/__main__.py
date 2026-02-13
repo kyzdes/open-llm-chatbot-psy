@@ -25,7 +25,6 @@ async def main() -> None:
         await bot.set_my_commands([
             BotCommand(command="start", description="Начать диалог"),
             BotCommand(command="help", description="Список команд"),
-            BotCommand(command="role", description="Бизнес-роли и задачи"),
             BotCommand(command="mood", description="Записать настроение"),
             BotCommand(command="diary", description="Дневник за неделю"),
             BotCommand(command="breathe", description="Дыхательная техника"),
