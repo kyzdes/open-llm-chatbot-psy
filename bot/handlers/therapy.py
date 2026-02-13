@@ -4,15 +4,18 @@ import logging
 from aiogram import Router, F
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram.types import Message, BufferedInputFile
 
 from bot.db.engine import get_db
 from bot.db.repositories.user import get_or_create_user
 from bot.db.repositories.conversation import add_message, get_messages
 from bot.db.repositories.settings import get_setting
-from bot.services.llm import chat_completion
+from bot.services.llm import chat_completion, resolve_model_for_task
 from bot.services.history import build_messages
 from bot.services.crisis import log_crisis_event
+from bot.services.roles import get_role, get_task, OutputFormat
+from bot.services.export import markdown_to_pdf, markdown_tables_to_excel, export_as_markdown
+from bot.handlers.roles import get_user_role_task
 from bot.utils.prompts import CRISIS_RESPONSE
 from bot.utils.formatting import md_to_html, sanitize_html
 from bot.utils.constants import TYPING_INTERVAL
@@ -93,6 +96,52 @@ async def _safe_answer(message: Message, text: str) -> None:
         await message.answer(text)
 
 
+async def _send_document(message: Message, buf, filename: str) -> None:
+    """Send BytesIO as a document."""
+    doc = BufferedInputFile(buf.read(), filename=filename)
+    await message.answer_document(doc)
+
+
+async def _send_with_export(
+    message: Message,
+    response: str,
+    output_format: OutputFormat | None,
+    task_name: str = "document",
+) -> None:
+    """Send the LLM response, optionally exporting as PDF/Excel."""
+    if output_format == OutputFormat.PDF:
+        buf = markdown_to_pdf(response, title=task_name)
+        if buf:
+            await _send_document(message, buf, f"{task_name}.pdf")
+            # Also send a short text summary
+            preview = response[:500] + ("..." if len(response) > 500 else "")
+            await _safe_answer(message, preview + "\n\n\u2191 Полный документ — в PDF-файле выше.")
+            return
+        # Fallback: send as .md file
+        buf = export_as_markdown(response, task_name)
+        await _send_document(message, buf, f"{task_name}.md")
+        await _safe_answer(message, "PDF не удалось сгенерировать, отправил как Markdown-файл.")
+        return
+
+    if output_format == OutputFormat.EXCEL:
+        buf = markdown_tables_to_excel(response, title=task_name)
+        if buf:
+            await _send_document(message, buf, f"{task_name}.xlsx")
+            # Also send the text response for context
+            for chunk in _split_response(response):
+                await _safe_answer(message, chunk)
+            return
+        # Fallback: no tables found, send text + .md
+        buf = export_as_markdown(response, task_name)
+        await _send_document(message, buf, f"{task_name}.md")
+        await _safe_answer(message, "Таблицы не найдены для Excel, отправил как Markdown-файл.")
+        return
+
+    # TEXT or MARKDOWN or None — regular text output
+    for chunk in _split_response(response):
+        await _safe_answer(message, chunk)
+
+
 @router.message(F.text)
 async def handle_text(message: Message, crisis_keyword: str | None = None) -> None:
     user_id = message.from_user.id
@@ -118,12 +167,33 @@ async def handle_text(message: Message, crisis_keyword: str | None = None) -> No
             await message.answer(CRISIS_RESPONSE, parse_mode="HTML")
             crisis_sent = True
 
-        # Get current model
-        model = await get_setting(db, "current_model", app_settings.default_model)
+        # Check if user has an active role/task
+        role_id, task_id = await get_user_role_task(db, user_id)
 
-        # Build history
+        role_obj = get_role(role_id) if role_id else None
+        task_obj = get_task(task_id) if task_id else None
+
+        # Determine prompts for injection
+        role_prompt = role_obj.system_prompt if role_obj and not task_obj else None
+        task_prompt = task_obj.master_prompt if task_obj else None
+        output_format = task_obj.output_format if task_obj else None
+
+        # Get model — task-specific or global default
+        if task_obj:
+            model = await resolve_model_for_task(task_obj.model_category.value)
+            if not model:
+                model = await get_setting(db, "current_model", app_settings.default_model)
+        else:
+            model = await get_setting(db, "current_model", app_settings.default_model)
+
+        # Build history with prompt injection
         conversation = await get_messages(db, user_id)
-        messages = await build_messages(db, conversation)
+        messages = await build_messages(
+            db,
+            conversation,
+            role_prompt=role_prompt,
+            task_prompt=task_prompt,
+        )
 
         # If crisis was detected, add a note for the LLM
         if crisis_sent:
@@ -158,9 +228,9 @@ async def handle_text(message: Message, crisis_keyword: str | None = None) -> No
         # Save assistant response
         await add_message(db, user_id, "assistant", response)
 
-        # Split on paragraph boundaries to avoid breaking markdown/words
-        for chunk in _split_response(response):
-            await _safe_answer(message, chunk)
+        # Send response with optional export
+        task_name = task_obj.name if task_obj else "document"
+        await _send_with_export(message, response, output_format, task_name)
 
     finally:
         await db.close()
