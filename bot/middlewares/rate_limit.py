@@ -7,6 +7,10 @@ from aiogram.types import Message
 from bot.utils.constants import RATE_LIMIT_BURST, RATE_LIMIT_RATE
 
 _BUCKET_EVICTION_AGE = 3600  # 1 hour
+_LIGHTWEIGHT_COMMANDS = frozenset({
+    "/mood", "/diary", "/start", "/help", "/cancel", "/skip",
+    "/reset", "/techniques",
+})
 
 
 class _Bucket:
@@ -48,6 +52,9 @@ class RateLimitMiddleware(BaseMiddleware):
     ) -> Any:
         if event.from_user is None:
             return None
+
+        if event.text and event.text.split()[0].split("@")[0] in _LIGHTWEIGHT_COMMANDS:
+            return await handler(event, data)
 
         self._evict_stale_buckets()
 
