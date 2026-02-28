@@ -1,13 +1,13 @@
 import aiosqlite
 
-from bot.db.repositories.conversation import estimate_tokens
+from bot.utils.tokens import estimate_tokens
 from bot.db.repositories.settings import get_setting
-from bot.utils.constants import MAX_HISTORY_TOKENS
+from bot.utils.constants import MAX_HISTORY_TOKENS, SETTING_SYSTEM_PROMPT
 from bot.utils.prompts import SYSTEM_PROMPT
 
 
 async def build_messages(db: aiosqlite.Connection, conversation: list[dict]) -> list[dict]:
-    prompt = await get_setting(db, "system_prompt", SYSTEM_PROMPT)
+    prompt = await get_setting(db, SETTING_SYSTEM_PROMPT, SYSTEM_PROMPT)
 
     system_msg = {"role": "system", "content": prompt}
     system_tokens = estimate_tokens(prompt)

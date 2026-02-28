@@ -11,8 +11,7 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    db = await get_db()
-    try:
+    async with get_db() as db:
         await get_or_create_user(
             db,
             user_id=message.from_user.id,
@@ -20,8 +19,6 @@ async def cmd_start(message: Message) -> None:
             first_name=message.from_user.first_name,
             language_code=message.from_user.language_code,
         )
-    finally:
-        await db.close()
     await message.answer(WELCOME_MESSAGE, parse_mode="HTML")
 
 

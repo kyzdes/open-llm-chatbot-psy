@@ -24,20 +24,15 @@ def reset_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def model_select_keyboard(
-    models: list[dict], current_model: str, max_shown: int = 20
-) -> tuple[InlineKeyboardMarkup, bool]:
-    """Build inline keyboard for model selection.
-
-    Returns (keyboard, truncated) where truncated=True if list was cut.
-    """
-    truncated = len(models) > max_shown
-    shown = models[:max_shown]
+    models: list[dict], current_model: str
+) -> InlineKeyboardMarkup:
+    """Build inline keyboard for model selection."""
     rows = []
-    for idx, m in enumerate(shown):
+    for idx, m in enumerate(models):
         check = "\u2713 " if m["id"] == current_model else ""
         label = f"{check}{m['name']}"
         if len(label) > 60:
             label = label[:57] + "..."
         rows.append([InlineKeyboardButton(text=label, callback_data=f"model:{idx}")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="model:cancel")])
-    return InlineKeyboardMarkup(inline_keyboard=rows), truncated
+    return InlineKeyboardMarkup(inline_keyboard=rows)

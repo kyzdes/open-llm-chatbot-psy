@@ -18,6 +18,11 @@ class MoodStates(StatesGroup):
     waiting_note = State()
 
 
+async def _save_mood(user_id: int, score: int, note: str | None) -> None:
+    async with get_db() as db:
+        await add_entry(db, user_id, score, note)
+
+
 @router.message(Command("mood"))
 async def cmd_mood(message: Message) -> None:
     await message.answer(
@@ -55,17 +60,10 @@ async def mood_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(MoodStates.waiting_note, F.text.startswith("/"))
 async def mood_ignore_commands(message: Message, state: FSMContext) -> None:
-    """Pass through other commands — clear FSM state so they are handled normally."""
-    note = None
+    """Save mood without note when another command arrives, then clear FSM."""
     data = await state.get_data()
     score = data["mood_score"]
-
-    db = await get_db()
-    try:
-        await add_entry(db, message.from_user.id, score, note)
-    finally:
-        await db.close()
-
+    await _save_mood(message.from_user.id, score, None)
     await state.clear()
     await message.answer(
         f"Настроение <b>{score}/10</b> записано без заметки.",
@@ -79,13 +77,9 @@ async def mood_note_received(message: Message, state: FSMContext) -> None:
     score = data["mood_score"]
     note = None if message.text and message.text.strip() == "/skip" else message.text
 
-    db = await get_db()
-    try:
-        await add_entry(db, message.from_user.id, score, note)
-    finally:
-        await db.close()
-
+    await _save_mood(message.from_user.id, score, note)
     await state.clear()
+
     note_text = f'\nЗаметка: <i>{html.escape(note)}</i>' if note else ""
     await message.answer(
         f"Записано! Настроение: <b>{score}/10</b>{note_text}",
@@ -95,11 +89,8 @@ async def mood_note_received(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("diary"))
 async def cmd_diary(message: Message) -> None:
-    db = await get_db()
-    try:
+    async with get_db() as db:
         entries = await get_entries_range(db, message.from_user.id, days=7)
-    finally:
-        await db.close()
 
     text = weekly_summary(entries)
     await message.answer(text, parse_mode="HTML")

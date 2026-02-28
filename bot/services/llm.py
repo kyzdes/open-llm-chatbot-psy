@@ -13,11 +13,11 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-MAX_RETRIES = 3
-RETRY_DELAYS = [2, 5, 10]
+_MAX_RETRIES = 3
+_RETRY_DELAYS = (2, 5, 10)
 _MODELS_CACHE_TTL = 600  # 10 minutes
 
-_think_pattern = re.compile(r"<think>.*?</think>", re.DOTALL)
+_think_re = re.compile(r"<think>.*?</think>", re.DOTALL)
 _models_cache: list[dict] = []
 _cache_ts: float = 0
 _models_lock = asyncio.Lock()
@@ -39,8 +39,15 @@ async def close_session() -> None:
         _session = None
 
 
+def _auth_headers(*, with_content_type: bool = False) -> dict[str, str]:
+    h: dict[str, str] = {"Authorization": f"Bearer {settings.openrouter_api_key}"}
+    if with_content_type:
+        h["Content-Type"] = "application/json"
+    return h
+
+
 def _strip_think(text: str) -> str:
-    return _think_pattern.sub("", text).strip()
+    return _think_re.sub("", text).strip()
 
 
 async def fetch_free_models() -> list[dict]:
@@ -54,17 +61,15 @@ async def fetch_free_models() -> list[dict]:
         return _models_cache
 
     async with _models_lock:
-        # Double-check after acquiring lock
         if _models_cache and (time.time() - _cache_ts) < _MODELS_CACHE_TTL:
             return _models_cache
 
-        headers = {
-            "Authorization": f"Bearer {settings.openrouter_api_key}",
-        }
         timeout = aiohttp.ClientTimeout(total=15)
         try:
             session = _get_session()
-            async with session.get(OPENROUTER_MODELS_URL, headers=headers, timeout=timeout) as resp:
+            async with session.get(
+                OPENROUTER_MODELS_URL, headers=_auth_headers(), timeout=timeout
+            ) as resp:
                 if resp.status != 200:
                     logger.warning("OpenRouter models API returned %s", resp.status)
                     return []
@@ -76,13 +81,9 @@ async def fetch_free_models() -> list[dict]:
         models = []
         for m in data.get("data", []):
             pricing = m.get("pricing", {})
-            prompt_price = pricing.get("prompt", "1")
-            completion_price = pricing.get("completion", "1")
-            if prompt_price != "0" or completion_price != "0":
+            if pricing.get("prompt", "1") != "0" or pricing.get("completion", "1") != "0":
                 continue
-            # Skip models that don't support chat / system messages
-            arch = m.get("architecture", {})
-            if arch.get("modality", "") == "image->text":
+            if "system_prompt" not in m.get("supported_parameters", []):
                 continue
             models.append({"id": m["id"], "name": m.get("name", m["id"])})
 
@@ -97,10 +98,6 @@ async def validate_model(model: str) -> str | None:
 
     Returns None on success, or an error description string.
     """
-    headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
-        "Content-Type": "application/json",
-    }
     payload = {
         "model": model,
         "messages": [
@@ -113,49 +110,47 @@ async def validate_model(model: str) -> str | None:
     try:
         session = _get_session()
         async with session.post(
-            OPENROUTER_URL, json=payload, headers=headers, timeout=timeout
+            OPENROUTER_URL,
+            json=payload,
+            headers=_auth_headers(with_content_type=True),
+            timeout=timeout,
         ) as resp:
             if resp.status == 200:
                 return None
             body = await resp.text()
             logger.warning("Model validation failed for %s: %s %s", model, resp.status, body)
-            return f"Модель <code>{model}</code> вернула ошибку {resp.status}. Возможно, она не поддерживает system-промпты."
+            return (
+                f"Модель <code>{model}</code> вернула ошибку {resp.status}. "
+                "Возможно, она не поддерживает system-промпты."
+            )
     except Exception as e:
         logger.warning("Model validation error for %s: %s", model, e)
         return f"Не удалось проверить модель <code>{model}</code>: {html.escape(str(e))}"
 
 
-async def chat_completion(
-    messages: list[dict],
-    model: str,
-) -> str:
-    headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
-        "Content-Type": "application/json",
-    }
+async def chat_completion(messages: list[dict], model: str) -> str:
     payload = {
         "model": model,
         "messages": messages,
         "include_reasoning": False,
     }
-
     timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT)
     data: dict | None = None
 
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(_MAX_RETRIES):
         try:
             session = _get_session()
             async with session.post(
-                OPENROUTER_URL, json=payload, headers=headers, timeout=timeout
+                OPENROUTER_URL,
+                json=payload,
+                headers=_auth_headers(with_content_type=True),
+                timeout=timeout,
             ) as resp:
                 if resp.status == 429:
                     body = await resp.text()
-                    logger.warning(
-                        "Rate limited (attempt %d/%d): %s",
-                        attempt + 1, MAX_RETRIES, body,
-                    )
-                    if attempt < MAX_RETRIES - 1:
-                        await asyncio.sleep(RETRY_DELAYS[attempt])
+                    logger.warning("Rate limited (attempt %d/%d): %s", attempt + 1, _MAX_RETRIES, body)
+                    if attempt < _MAX_RETRIES - 1:
+                        await asyncio.sleep(_RETRY_DELAYS[attempt])
                         continue
                     return "Извини, AI-сервис временно перегружен. Попробуй через минуту."
 
@@ -171,8 +166,8 @@ async def chat_completion(
                     logger.error("Invalid JSON from OpenRouter: %s — %s", e, body[:500])
                     return "Извини, получен некорректный ответ от AI. Попробуй ещё раз."
         except asyncio.TimeoutError:
-            logger.warning("LLM timeout (attempt %d/%d)", attempt + 1, MAX_RETRIES)
-            if attempt < MAX_RETRIES - 1:
+            logger.warning("LLM timeout (attempt %d/%d)", attempt + 1, _MAX_RETRIES)
+            if attempt < _MAX_RETRIES - 1:
                 continue
             return "Извини, AI долго думает и не успел ответить. Попробуй ещё раз."
         except aiohttp.ClientError as e:

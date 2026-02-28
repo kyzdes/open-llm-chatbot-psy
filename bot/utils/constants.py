@@ -4,3 +4,7 @@ RATE_LIMIT_BURST = 3
 RATE_LIMIT_RATE = 0.1  # 1 token per 10 seconds
 LLM_TIMEOUT = 120
 TYPING_INTERVAL = 4
+
+# Bot settings keys (stored in bot_settings table)
+SETTING_CURRENT_MODEL = "current_model"
+SETTING_SYSTEM_PROMPT = "system_prompt"

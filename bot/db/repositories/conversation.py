@@ -1,8 +1,6 @@
 import aiosqlite
 
-
-def estimate_tokens(text: str) -> int:
-    return max(1, len(text.encode("utf-8")) // 4)
+from bot.utils.tokens import estimate_tokens
 
 
 async def add_message(

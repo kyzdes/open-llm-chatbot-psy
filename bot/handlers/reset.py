@@ -19,11 +19,8 @@ async def cmd_reset(message: Message) -> None:
 
 @router.callback_query(F.data == "reset:confirm")
 async def reset_confirmed(callback: CallbackQuery) -> None:
-    db = await get_db()
-    try:
+    async with get_db() as db:
         deleted = await delete_messages(db, callback.from_user.id)
-    finally:
-        await db.close()
 
     await callback.message.edit_text(
         f"История очищена. Удалено сообщений: {deleted}.\nМожем начать сначала 💙"

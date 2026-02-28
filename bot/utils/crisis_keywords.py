@@ -1,3 +1,5 @@
+import re
+
 CRISIS_KEYWORDS_RU = [
     "хочу умереть",
     "не хочу жить",
@@ -54,3 +56,8 @@ CRISIS_KEYWORDS_EN = [
 ]
 
 ALL_CRISIS_KEYWORDS = CRISIS_KEYWORDS_RU + CRISIS_KEYWORDS_EN
+
+# Pre-compiled regex: single pass instead of 51 linear substring checks
+CRISIS_PATTERN = re.compile(
+    "|".join(re.escape(kw) for kw in ALL_CRISIS_KEYWORDS)
+)
