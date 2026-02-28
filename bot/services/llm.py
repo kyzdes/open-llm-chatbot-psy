@@ -128,14 +128,17 @@ async def validate_model(model: str) -> str | None:
         return f"Не удалось проверить модель <code>{model}</code>: {html.escape(str(e))}"
 
 
-async def chat_completion(messages: list[dict], model: str) -> str:
+_FALLBACK_MODEL = "openrouter/free"
+
+
+async def _single_completion(messages: list[dict], model: str) -> str | None:
+    """Try one model. Returns response text on success, None on retryable failure."""
     payload = {
         "model": model,
         "messages": messages,
         "include_reasoning": False,
     }
     timeout = aiohttp.ClientTimeout(total=LLM_TIMEOUT)
-    data: dict | None = None
 
     for attempt in range(_MAX_RETRIES):
         try:
@@ -146,43 +149,59 @@ async def chat_completion(messages: list[dict], model: str) -> str:
                 headers=_auth_headers(with_content_type=True),
                 timeout=timeout,
             ) as resp:
-                if resp.status == 429:
+                if resp.status == 429 or resp.status >= 500:
                     body = await resp.text()
-                    logger.warning("Rate limited (attempt %d/%d): %s", attempt + 1, _MAX_RETRIES, body)
+                    logger.warning(
+                        "%s returned %s (attempt %d/%d): %s",
+                        model, resp.status, attempt + 1, _MAX_RETRIES, body[:200],
+                    )
                     if attempt < _MAX_RETRIES - 1:
                         await asyncio.sleep(_RETRY_DELAYS[attempt])
                         continue
-                    return "Извини, AI-сервис временно перегружен. Попробуй через минуту."
+                    return None
 
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.error("OpenRouter error %s: %s", resp.status, body)
-                    return "Извини, произошла ошибка при обращении к AI. Попробуй ещё раз чуть позже."
+                    logger.error("OpenRouter error %s for %s: %s", resp.status, model, body[:300])
+                    return None
 
                 try:
                     data = await resp.json()
                 except (ValueError, aiohttp.ContentTypeError) as e:
                     body = await resp.text()
-                    logger.error("Invalid JSON from OpenRouter: %s — %s", e, body[:500])
-                    return "Извини, получен некорректный ответ от AI. Попробуй ещё раз."
+                    logger.error("Invalid JSON from %s: %s — %s", model, e, body[:500])
+                    return None
         except asyncio.TimeoutError:
-            logger.warning("LLM timeout (attempt %d/%d)", attempt + 1, _MAX_RETRIES)
+            logger.warning("Timeout for %s (attempt %d/%d)", model, attempt + 1, _MAX_RETRIES)
             if attempt < _MAX_RETRIES - 1:
                 continue
-            return "Извини, AI долго думает и не успел ответить. Попробуй ещё раз."
+            return None
         except aiohttp.ClientError as e:
-            logger.error("HTTP error: %s", e)
-            return "Извини, ошибка соединения с AI. Попробуй ещё раз."
+            logger.error("HTTP error for %s: %s", model, e)
+            return None
         else:
             break
-
-    if data is None:
-        return "Извини, не удалось получить ответ от AI. Попробуй ещё раз."
+    else:
+        return None
 
     try:
         raw = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
-        logger.error("Unexpected OpenRouter response: %s", data)
-        return "Извини, получен некорректный ответ от AI. Попробуй ещё раз."
+        logger.error("Unexpected response from %s: %s", model, data)
+        return None
 
-    return _strip_think(raw) if raw else "..."
+    return _strip_think(raw) if raw else None
+
+
+async def chat_completion(messages: list[dict], model: str) -> str:
+    result = await _single_completion(messages, model)
+    if result:
+        return result
+
+    if model != _FALLBACK_MODEL:
+        logger.info("Falling back from %s to %s", model, _FALLBACK_MODEL)
+        result = await _single_completion(messages, _FALLBACK_MODEL)
+        if result:
+            return result
+
+    return "Извини, AI-сервис временно недоступен. Попробуй через минуту."
