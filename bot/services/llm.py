@@ -78,16 +78,46 @@ async def fetch_free_models() -> list[dict]:
             logger.exception("Failed to fetch models from OpenRouter")
             return []
 
-        models = []
+        candidates = []
         for m in data.get("data", []):
             pricing = m.get("pricing", {})
             if pricing.get("prompt", "1") != "0" or pricing.get("completion", "1") != "0":
                 continue
-            models.append({"id": m["id"], "name": m.get("name", m["id"])})
+            candidates.append({"id": m["id"], "name": m.get("name", m["id"])})
+
+        # Quick-check all candidates in parallel; exclude only permanently broken ones
+        async def _is_alive(model_id: str) -> bool:
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": "Reply OK."},
+                    {"role": "user", "content": "ping"},
+                ],
+                "max_tokens": 1,
+            }
+            try:
+                session = _get_session()
+                async with session.post(
+                    OPENROUTER_URL,
+                    json=payload,
+                    headers=_auth_headers(with_content_type=True),
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status in (400, 404):
+                        body = await resp.text()
+                        logger.info("Excluding %s: %s %s", model_id, resp.status, body[:120])
+                        return False
+                    return True
+            except Exception:
+                return True  # network error — assume alive
+
+        results = await asyncio.gather(*[_is_alive(m["id"]) for m in candidates])
+        models = [m for m, ok in zip(candidates, results) if ok]
 
         models.sort(key=lambda x: x["name"])
         _models_cache = models
         _cache_ts = time.time()
+        logger.info("Fetched %d free models (%d alive)", len(candidates), len(models))
         return models
 
 
