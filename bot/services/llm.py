@@ -83,8 +83,6 @@ async def fetch_free_models() -> list[dict]:
             pricing = m.get("pricing", {})
             if pricing.get("prompt", "1") != "0" or pricing.get("completion", "1") != "0":
                 continue
-            if "system_prompt" not in m.get("supported_parameters", []):
-                continue
             models.append({"id": m["id"], "name": m.get("name", m["id"])})
 
         models.sort(key=lambda x: x["name"])
