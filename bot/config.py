@@ -24,6 +24,7 @@ def get_settings() -> Settings:
     return Settings(
         telegram_bot_token=token,
         openrouter_api_key=api_key,
+        default_model=os.getenv("DEFAULT_MODEL", "stepfun/step-3.5-flash:free"),
     )
 
 
